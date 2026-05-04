@@ -430,7 +430,7 @@ else
 input {
     keyboard {
         xkb {
-            layout "us"
+            layout "gb"
             // options "caps:escape"
         }
         repeat-delay 600

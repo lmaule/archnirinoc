@@ -89,14 +89,9 @@ paru -S --noconfirm --needed xwayland-satellite
 ok "Niri and Wayland core installed"
 
 # ── Terminal emulator ────────────────────────────────────────────────────────
-header "Terminal (foot)"
-sudo pacman -S --noconfirm --needed foot
-ok "foot terminal installed"
-
-# ── App launcher ─────────────────────────────────────────────────────────────
-header "App launcher (fuzzel)"
-sudo pacman -S --noconfirm --needed fuzzel
-ok "fuzzel installed"
+header "Terminal (kitty)"
+sudo pacman -S --noconfirm --needed kitty
+ok "kitty terminal installed"
 
 # ── Notification daemon ──────────────────────────────────────────────────────
 header "Notifications (mako)"
@@ -268,8 +263,7 @@ window-rule {
 
 binds {
     // ── Applications ──────────────────────────────────────────────────
-    Mod+Return { spawn "foot"; }
-    Mod+D      { spawn "fuzzel"; }
+    Mod+Return { spawn "kitty"; }
 
     // ── Window management ─────────────────────────────────────────────
     Mod+Q           { close-window; }

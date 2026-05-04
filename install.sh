@@ -369,8 +369,7 @@ ok "Network and Bluetooth services enabled"
 
 # ── Display manager: greetd + tuigreet ────────────────────────────────────────
 header "Display manager (greetd + tuigreet)"
-sudo pacman -S --noconfirm --needed greetd
-paru -S --noconfirm --needed tuigreet
+sudo pacman -S --noconfirm --needed greetd greetd-tuigreet
 
 sudo mkdir -p /etc/greetd
 sudo tee /etc/greetd/config.toml > /dev/null <<EOF

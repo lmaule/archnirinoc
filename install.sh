@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Bootstrap Niri + Noctalia on a minimal Arch Linux installation.
+# Install Niri + Noctalia on a minimal Arch Linux installation.
 # Run as a regular user with sudo privileges from a TTY prompt.
 
 set -euo pipefail
 
-# ── Colors & logging ────────────────────────────────────────────────────────
+# ── Colors & logging ──────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -18,7 +18,7 @@ warn()  { printf "${YELLOW}  ! ${NC}%s\n" "$*"; }
 die()   { printf "${RED}  ✗ ${NC}%s\n" "$*" >&2; exit 1; }
 header(){ printf "\n${BOLD}━━━ %s ${NC}\n" "$*"; }
 
-# ── Pre-flight checks ────────────────────────────────────────────────────────
+# ── Pre-flight checks ─────────────────────────────────────────────────────────
 header "Pre-flight checks"
 
 [[ $EUID -eq 0 ]] && die "Do not run this script as root. Run as a regular user with sudo privileges."
@@ -33,19 +33,99 @@ fi
 
 ok "Running as ${USER}, sudo available, internet reachable"
 
-# ── System update ────────────────────────────────────────────────────────────
+# ── Configuration — all interactive prompts collected upfront ─────────────────
+header "Configuration"
+printf "  Answer a few questions — the rest of the install runs unattended.\n\n"
+
+# Mirror country
+printf "  ${BOLD}Mirror optimisation${NC}\n"
+printf "  Enter your ISO country code to rank pacman mirrors by speed.\n"
+printf "  Leave blank to skip (existing mirrorlist will be used).\n"
+read -rp "  Country code (e.g. GB, US, DE) [skip]: " CFG_MIRROR_COUNTRY
+printf "\n"
+
+# GPU selection
+printf "  ${BOLD}GPU drivers${NC}\n"
+_detected_gpu="none"
+if lspci 2>/dev/null | grep -Eiq "VGA|3D|Display"; then
+    if lspci 2>/dev/null | grep -Eiq "NVIDIA"; then
+        _detected_gpu="nvidia"
+    elif lspci 2>/dev/null | grep -Eiq "AMD|ATI|Radeon"; then
+        _detected_gpu="amd"
+    elif lspci 2>/dev/null | grep -Eiq "Intel.*Graphics|Intel.*VGA"; then
+        _detected_gpu="intel"
+    fi
+fi
+
+case "$_detected_gpu" in
+    nvidia) _gpu_default=1 ;;
+    amd)    _gpu_default=2 ;;
+    intel)  _gpu_default=3 ;;
+    *)      _gpu_default=4 ;;
+esac
+
+[[ "$_detected_gpu" != "none" ]] \
+    && printf "  Detected: ${CYAN}${_detected_gpu}${NC}\n" \
+    || printf "  ${YELLOW}GPU vendor not auto-detected${NC}\n"
+
+printf "  1) NVIDIA  open-dkms  (Turing / RTX 2000+ required)\n"
+printf "  2) AMD     mesa + vulkan-radeon\n"
+printf "  3) Intel   mesa + vulkan-intel + intel-media-driver\n"
+printf "  4) Skip    (already installed or VM)\n"
+read -rp "  Choice [${_gpu_default}]: " CFG_GPU_CHOICE
+CFG_GPU_CHOICE="${CFG_GPU_CHOICE:-$_gpu_default}"
+printf "\n"
+
+# Screen lock / idle timeouts
+printf "  ${BOLD}Screen lock & idle${NC}\n"
+read -rp "  Minutes of idle before locking the screen [5]: " _lock_mins
+read -rp "  Minutes of idle before turning off displays [10]: " _off_mins
+CFG_LOCK_SECS=$(( ${_lock_mins:-5} * 60 ))
+CFG_OFF_SECS=$(( ${_off_mins:-10} * 60 ))
+printf "\n"
+
+# Night light
+printf "  ${BOLD}Night light (wlsunset)${NC}\n"
+printf "  Reduces blue light after sunset. Enter your coordinates,\n"
+printf "  or leave latitude blank to skip.\n"
+read -rp "  Latitude  (e.g. 51.5 for London, 40.7 for New York) [skip]: " CFG_LAT
+if [[ -n "$CFG_LAT" ]]; then
+    read -rp "  Longitude (e.g. -0.1 for London, -74.0 for New York): " CFG_LON
+else
+    CFG_LON=""
+fi
+printf "\n"
+
+ok "Configuration collected — starting unattended install"
+
+# ── Pacman tweaks ─────────────────────────────────────────────────────────────
+header "Pacman configuration"
+sudo sed -i 's/^#Color/Color/' /etc/pacman.conf
+sudo sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 5/' /etc/pacman.conf
+ok "Color and ParallelDownloads = 5 enabled"
+
+# ── Mirror optimisation ───────────────────────────────────────────────────────
+if [[ -n "$CFG_MIRROR_COUNTRY" ]]; then
+    header "Mirror optimisation (reflector)"
+    sudo pacman -S --noconfirm --needed reflector
+    info "Ranking mirrors for: ${CFG_MIRROR_COUNTRY}..."
+    sudo reflector --country "$CFG_MIRROR_COUNTRY" --latest 10 --sort rate \
+        --save /etc/pacman.d/mirrorlist
+    ok "Mirrorlist updated"
+fi
+
+# ── System update ─────────────────────────────────────────────────────────────
 header "System update"
 info "Syncing package databases and upgrading system..."
 sudo pacman -Syu --noconfirm
 ok "System is up to date"
 
-# ── Base build tools ─────────────────────────────────────────────────────────
+# ── Base build tools ──────────────────────────────────────────────────────────
 header "Base build tools"
-info "Installing base-devel and git..."
 sudo pacman -S --noconfirm --needed base-devel git curl
 ok "Build tools installed"
 
-# ── AUR helper: paru ─────────────────────────────────────────────────────────
+# ── AUR helper: paru ──────────────────────────────────────────────────────────
 header "AUR helper (paru)"
 if command -v paru &>/dev/null; then
     ok "paru already installed"
@@ -58,13 +138,12 @@ else
     ok "paru installed"
 fi
 
-# ── GPU drivers ──────────────────────────────────────────────────────────────
+# ── GPU drivers ───────────────────────────────────────────────────────────────
 header "GPU drivers"
 
 _install_nvidia() {
     info "Installing NVIDIA open kernel module drivers (requires Turing / RTX 2000+ or newer)..."
 
-    # Install headers for every detected kernel so DKMS can build against each
     info "Installing kernel headers for DKMS..."
     while IFS= read -r _kpkg; do
         sudo pacman -S --noconfirm --needed "${_kpkg}-headers" \
@@ -79,8 +158,7 @@ _install_nvidia() {
         nvidia-settings \
         egl-wayland
 
-    # Early KMS: add nvidia modules to mkinitcpio so the driver is loaded
-    # during initramfs, preventing a race condition with the display manager
+    # Early KMS: prevents a race condition between the DM and the driver
     local _conf=/etc/mkinitcpio.conf
     local _mods="nvidia nvidia_modeset nvidia_uvm nvidia_drm"
     if ! grep -q "nvidia" "$_conf"; then
@@ -97,7 +175,6 @@ _install_nvidia() {
         ok "nvidia already present in mkinitcpio MODULES — skipping"
     fi
 
-    # Kernel parameter: enable DRM modesetting (required for Wayland)
     local _param="nvidia-drm.modeset=1"
     if [[ -d /boot/loader/entries ]]; then
         local _updated=0
@@ -123,7 +200,6 @@ _install_nvidia() {
         warn "Bootloader not detected — add '$_param' to your kernel parameters manually."
     fi
 
-    # Environment variables required for NVIDIA + Wayland
     mkdir -p "$HOME/.config/environment.d"
     cat > "$HOME/.config/environment.d/nvidia-wayland.conf" <<'EOF'
 LIBVA_DRIVER_NAME=nvidia
@@ -156,38 +232,7 @@ _install_intel() {
     ok "Intel drivers installed"
 }
 
-# Auto-detect GPU vendor via lspci
-_detected_gpu="none"
-if lspci 2>/dev/null | grep -Eiq "VGA|3D|Display"; then
-    if lspci 2>/dev/null | grep -Eiq "NVIDIA"; then
-        _detected_gpu="nvidia"
-    elif lspci 2>/dev/null | grep -Eiq "AMD|ATI|Radeon"; then
-        _detected_gpu="amd"
-    elif lspci 2>/dev/null | grep -Eiq "Intel.*Graphics|Intel.*VGA"; then
-        _detected_gpu="intel"
-    fi
-fi
-
-case "$_detected_gpu" in
-    nvidia) _gpu_default=1 ;;
-    amd)    _gpu_default=2 ;;
-    intel)  _gpu_default=3 ;;
-    *)      _gpu_default=4 ;;
-esac
-
-[[ "$_detected_gpu" != "none" ]] \
-    && info "Detected GPU vendor: ${_detected_gpu}" \
-    || warn "GPU vendor not auto-detected"
-
-printf "\n  Select GPU driver to install:\n"
-printf "  1) NVIDIA  open-dkms  (Turing / RTX 2000+ required)\n"
-printf "  2) AMD     mesa + vulkan-radeon\n"
-printf "  3) Intel   mesa + vulkan-intel + intel-media-driver\n"
-printf "  4) Skip    (drivers already installed or VM / unsupported GPU)\n"
-read -rp "  Choice [${_gpu_default}]: " _gpu_choice
-_gpu_choice="${_gpu_choice:-$_gpu_default}"
-
-case "$_gpu_choice" in
+case "$CFG_GPU_CHOICE" in
     1) _install_nvidia ;;
     2) _install_amd    ;;
     3) _install_intel  ;;
@@ -195,7 +240,7 @@ case "$_gpu_choice" in
     *) warn "Invalid choice — skipping GPU driver installation" ;;
 esac
 
-# ── Audio: PipeWire stack ────────────────────────────────────────────────────
+# ── Audio: PipeWire stack ─────────────────────────────────────────────────────
 header "Audio stack (PipeWire)"
 sudo pacman -S --noconfirm --needed \
     pipewire \
@@ -206,9 +251,14 @@ sudo pacman -S --noconfirm --needed \
     pavucontrol
 ok "PipeWire stack installed"
 
-# ── Niri and Wayland core ────────────────────────────────────────────────────
+# ── Power management ──────────────────────────────────────────────────────────
+header "Power management"
+sudo pacman -S --noconfirm --needed power-profiles-daemon
+sudo systemctl enable --now power-profiles-daemon
+ok "power-profiles-daemon installed and enabled"
+
+# ── Niri and Wayland core ─────────────────────────────────────────────────────
 header "Niri and Wayland core"
-info "Installing niri and core Wayland packages..."
 sudo pacman -S --noconfirm --needed \
     niri \
     xdg-desktop-portal-gnome \
@@ -219,28 +269,52 @@ sudo pacman -S --noconfirm --needed \
     grim \
     slurp
 
-# xwayland-satellite provides XWayland support for legacy X11 apps
 info "Installing xwayland-satellite from AUR..."
 paru -S --noconfirm --needed xwayland-satellite
 
 ok "Niri and Wayland core installed"
 
-# ── Terminal emulator ────────────────────────────────────────────────────────
+# ── Terminal emulator ─────────────────────────────────────────────────────────
 header "Terminal (kitty)"
 sudo pacman -S --noconfirm --needed kitty
-ok "kitty terminal installed"
+ok "kitty installed"
 
-# ── Notification daemon ──────────────────────────────────────────────────────
+# ── File manager ──────────────────────────────────────────────────────────────
+header "File manager (nautilus)"
+sudo pacman -S --noconfirm --needed \
+    nautilus \
+    gvfs \
+    gvfs-mtp
+ok "nautilus + gvfs installed"
+
+# ── Notification daemon ───────────────────────────────────────────────────────
 header "Notifications (mako)"
 sudo pacman -S --noconfirm --needed mako
 ok "mako installed"
 
-# ── Wallpaper daemon ─────────────────────────────────────────────────────────
+# ── Wallpaper daemon ──────────────────────────────────────────────────────────
 header "Wallpaper daemon (swww)"
 paru -S --noconfirm --needed swww
 ok "swww installed"
 
-# ── Brightness & display utilities ───────────────────────────────────────────
+# ── Screen lock ───────────────────────────────────────────────────────────────
+header "Screen lock (swaylock)"
+sudo pacman -S --noconfirm --needed swaylock
+ok "swaylock installed"
+
+# ── Idle management ───────────────────────────────────────────────────────────
+header "Idle management (swayidle)"
+sudo pacman -S --noconfirm --needed swayidle
+ok "swayidle installed (lock at ${CFG_LOCK_SECS}s, displays off at ${CFG_OFF_SECS}s)"
+
+# ── Night light ───────────────────────────────────────────────────────────────
+if [[ -n "$CFG_LAT" ]]; then
+    header "Night light (wlsunset)"
+    sudo pacman -S --noconfirm --needed wlsunset
+    ok "wlsunset installed (lat: ${CFG_LAT}, lon: ${CFG_LON})"
+fi
+
+# ── Brightness & display utilities ────────────────────────────────────────────
 header "Brightness & display"
 sudo pacman -S --noconfirm --needed \
     brightnessctl \
@@ -256,60 +330,43 @@ sudo pacman -S --noconfirm --needed \
     ttf-font-awesome
 ok "Fonts installed"
 
-# ── GTK & Qt theming ────────────────────────────────────────────────────────
+# ── GTK & Qt theming ──────────────────────────────────────────────────────────
 header "GTK & Qt theming"
-
-# GTK: runtime libs, schema data, icons, and nwg-look (Wayland-native GTK
-# settings editor — replaces lxappearance which doesn't work on Wayland)
 sudo pacman -S --noconfirm --needed \
     gtk3 \
     gtk4 \
     adwaita-icon-theme \
     gsettings-desktop-schemas \
-    nwg-look
-
-# Qt: qt5ct and qt6ct let Noctalia apply its color scheme to Qt apps;
-# Kvantum is the style engine that renders those themes
-sudo pacman -S --noconfirm --needed \
+    nwg-look \
     qt5ct \
     qt6ct \
     kvantum
 
-# Tell Qt to use the Wayland backend and qt6ct as the platform theme.
-# Written to environment.d so systemd --user exports it to every process
-# launched after login, including Niri and all apps it spawns.
 mkdir -p "$HOME/.config/environment.d"
 cat > "$HOME/.config/environment.d/theming.conf" <<'EOF'
-# Qt: render on Wayland, use qt6ct for theming (Noctalia sets its color scheme here)
 QT_QPA_PLATFORM=wayland
 QT_QPA_PLATFORMTHEME=qt6ct
-
-# Cursor: Adwaita is already present via adwaita-icon-theme
 XCURSOR_THEME=Adwaita
 XCURSOR_SIZE=24
 EOF
 
-ok "GTK & Qt theming packages installed"
+ok "GTK & Qt theming installed"
 ok "Theming environment written to ~/.config/environment.d/theming.conf"
-info "Run 'nwg-look' inside a Niri session to configure GTK theme, icons, and cursor interactively."
-info "Run 'qt6ct' to configure Qt6 style (set to Kvantum, then configure Kvantum via 'kvantummanager')."
 
-# ── Network & Bluetooth applets ──────────────────────────────────────────────
+# ── Network & Bluetooth ───────────────────────────────────────────────────────
 header "Network & Bluetooth"
-sudo pacman -S --noconfirm --needed networkmanager nm-applet
+sudo pacman -S --noconfirm --needed networkmanager network-manager-applet
 sudo systemctl enable --now NetworkManager
 paru -S --noconfirm --needed blueman
 sudo pacman -S --noconfirm --needed bluez bluez-utils
 sudo systemctl enable --now bluetooth
 ok "Network and Bluetooth services enabled"
 
-# ── Display manager: greetd + tuigreet ──────────────────────────────────────
+# ── Display manager: greetd + tuigreet ────────────────────────────────────────
 header "Display manager (greetd + tuigreet)"
-info "Installing greetd and tuigreet..."
 sudo pacman -S --noconfirm --needed greetd
 paru -S --noconfirm --needed tuigreet
 
-info "Writing greetd configuration..."
 sudo mkdir -p /etc/greetd
 sudo tee /etc/greetd/config.toml > /dev/null <<EOF
 [terminal]
@@ -322,12 +379,17 @@ user = "greeter"
 EOF
 
 sudo systemctl enable greetd
-ok "greetd configured and enabled (will activate on next reboot)"
+ok "greetd configured and enabled"
 
-# ── Noctalia shell ───────────────────────────────────────────────────────────
+# ── Flatpak ───────────────────────────────────────────────────────────────────
+header "Flatpak"
+sudo pacman -S --noconfirm --needed flatpak
+flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+ok "Flatpak installed with Flathub remote"
+
+# ── Noctalia shell ────────────────────────────────────────────────────────────
 header "Noctalia shell"
 
-# noctalia-qs conflicts with quickshell; remove them if present
 for _pkg in quickshell quickshell-git; do
     if paru -Q "$_pkg" &>/dev/null; then
         warn "$_pkg conflicts with noctalia-qs — removing it..."
@@ -335,26 +397,33 @@ for _pkg in quickshell quickshell-git; do
     fi
 done
 
-info "Installing noctalia-shell from AUR (this builds noctalia-qs and its Qt dependencies — may take a while)..."
+info "Installing noctalia-shell from AUR (builds noctalia-qs + Qt deps — may take a while)..."
 paru -S --noconfirm --needed noctalia-shell
 
-# Optional Noctalia dependencies
 info "Installing optional Noctalia dependencies..."
-paru -S --noconfirm --needed cliphist          # clipboard history
+paru -S --noconfirm --needed cliphist
 sudo pacman -S --noconfirm --needed imagemagick ffmpeg python qt6-multimedia
 
 ok "Noctalia shell installed"
 
-# ── Niri config skeleton ─────────────────────────────────────────────────────
+# ── Niri config skeleton ──────────────────────────────────────────────────────
 header "Niri configuration"
 mkdir -p "$HOME/.config/niri"
 
+# Build the wlsunset line before the heredoc so the variable expands correctly.
+# The heredoc uses an unquoted delimiter so CFG_* variables are interpolated.
+if [[ -n "$CFG_LAT" ]]; then
+    _wlsunset_line="spawn-at-startup \"wlsunset\" \"-l\" \"${CFG_LAT}\" \"-L\" \"${CFG_LON}\""
+else
+    _wlsunset_line="// night light not configured — to enable: spawn-at-startup \"wlsunset\" \"-l\" \"LAT\" \"-L\" \"LON\""
+fi
+
 if [[ -f "$HOME/.config/niri/config.kdl" ]]; then
-    warn "~/.config/niri/config.kdl already exists — skipping (backup: config.kdl.bak)"
+    warn "~/.config/niri/config.kdl already exists — backing up to config.kdl.bak and skipping"
     cp "$HOME/.config/niri/config.kdl" "$HOME/.config/niri/config.kdl.bak"
 else
-    info "Writing ~/.config/niri/config.kdl skeleton..."
-    cat > "$HOME/.config/niri/config.kdl" <<'KDLEOF'
+    info "Writing ~/.config/niri/config.kdl..."
+    cat > "$HOME/.config/niri/config.kdl" <<KDLEOF
 // Niri configuration — https://github.com/YaLTeR/niri/wiki/Configuration
 // Super key = Mod
 
@@ -408,12 +477,15 @@ layout {
     }
 }
 
-// Spawn these daemons when Niri starts
+// Daemon autostart
 spawn-at-startup "xwayland-satellite"
 spawn-at-startup "mako"
 spawn-at-startup "swww-daemon"
 spawn-at-startup "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
 spawn-at-startup "noctalia"
+spawn-at-startup "wl-paste" "--type" "text" "--watch" "cliphist store"
+spawn-at-startup "swayidle" "-w" "timeout" "${CFG_LOCK_SECS}" "swaylock -f -c 000000" "timeout" "${CFG_OFF_SECS}" "niri msg action power-off-monitors" "resume" "niri msg action power-on-monitors" "before-sleep" "swaylock -f -c 000000"
+${_wlsunset_line}
 
 prefer-no-csd
 
@@ -434,8 +506,12 @@ window-rule {
 
 binds {
     // ── Applications ──────────────────────────────────────────────────
-    Mod+Return { spawn "kitty"; }
-    Mod+D      { spawn-sh "noctalia-shell ipc call launcher toggle"; }
+    Mod+Return  { spawn "kitty"; }
+    Mod+D       { spawn-sh "noctalia-shell ipc call launcher toggle"; }
+    Mod+E       { spawn "nautilus"; }
+
+    // ── Screen lock ───────────────────────────────────────────────────
+    Mod+Shift+L { spawn "swaylock" "-f" "-c" "000000"; }
 
     // ── Window management ─────────────────────────────────────────────
     Mod+Q           { close-window; }
@@ -493,8 +569,8 @@ binds {
     Mod+BracketLeft    { focus-workspace-up; }
 
     // ── Scrolling ─────────────────────────────────────────────────────
-    Mod+WheelScrollRight      { focus-column-right; }
-    Mod+WheelScrollLeft       { focus-column-left; }
+    Mod+WheelScrollRight       { focus-column-right; }
+    Mod+WheelScrollLeft        { focus-column-left; }
     Mod+Shift+WheelScrollRight { move-column-right; }
     Mod+Shift+WheelScrollLeft  { move-column-left; }
 
@@ -519,26 +595,25 @@ KDLEOF
     ok "~/.config/niri/config.kdl written"
 fi
 
-# ── Screenshots directory ────────────────────────────────────────────────────
+# ── Screenshots directory ─────────────────────────────────────────────────────
 mkdir -p "$HOME/Pictures/Screenshots"
 
-# ── XDG user dirs ────────────────────────────────────────────────────────────
+# ── XDG user dirs ─────────────────────────────────────────────────────────────
 xdg-user-dirs-update
 
-# ── Enable user systemd services ─────────────────────────────────────────────
+# ── Enable user systemd services ──────────────────────────────────────────────
 header "User systemd services"
 systemctl --user enable --now wireplumber.service 2>/dev/null || true
 systemctl --user enable --now pipewire-pulse.service 2>/dev/null || true
 ok "wireplumber and pipewire-pulse user services enabled"
 
-# ── Done ─────────────────────────────────────────────────────────────────────
-header "Bootstrap complete"
+# ── Done ──────────────────────────────────────────────────────────────────────
+header "Install complete"
 printf "\n${GREEN}${BOLD}Everything is installed!${NC}\n\n"
 printf "  ${BOLD}Next steps:${NC}\n"
-printf "  1. Edit ${CYAN}~/.config/niri/config.kdl${NC} — adjust keyboard layout,\n"
-printf "     output name (replace eDP-1 with your display), and keybinds.\n"
-printf "  2. Configure Noctalia: see ${CYAN}https://docs.noctalia.dev/${NC}\n"
-printf "  3. Reboot to start a fresh session via greetd → tuigreet.\n"
+printf "  1. Edit ${CYAN}~/.config/niri/config.kdl${NC} — set your keyboard layout\n"
+printf "     and replace eDP-1 with your display name (find it with: niri msg outputs).\n"
+printf "  2. Run ${CYAN}niri validate-config${NC} to check for syntax errors.\n"
+printf "  3. Configure Noctalia: ${CYAN}https://docs.noctalia.dev/${NC}\n"
+printf "  4. Reboot — greetd will handle login from here on.\n"
 printf "     ${BOLD}sudo reboot${NC}\n\n"
-printf "  ${YELLOW}Tip:${NC} Run ${BOLD}niri validate-config${NC} after editing the config to\n"
-printf "  catch syntax errors before rebooting.\n\n"

@@ -33,6 +33,11 @@ fi
 
 ok "Running as ${USER}, sudo available, internet reachable"
 
+# Re-validate sudo every 60 s so it never times out during long AUR builds
+while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+_keepalive_pid=$!
+trap "kill $_keepalive_pid 2>/dev/null" EXIT
+
 # ── Configuration — all interactive prompts collected upfront ─────────────────
 header "Configuration"
 printf "  Answer a few questions — the rest of the install runs unattended.\n\n"
@@ -109,7 +114,7 @@ if [[ -n "$CFG_MIRROR_COUNTRY" ]]; then
     header "Mirror optimisation (reflector)"
     sudo pacman -S --noconfirm --needed reflector
     info "Ranking mirrors for: ${CFG_MIRROR_COUNTRY}..."
-    sudo reflector --country "$CFG_MIRROR_COUNTRY" --latest 10 --sort rate \
+    sudo reflector --country "$CFG_MIRROR_COUNTRY" --latest 10 --protocol https --sort rate \
         --save /etc/pacman.d/mirrorlist
     ok "Mirrorlist updated"
 fi
@@ -484,6 +489,7 @@ spawn-at-startup "swww-daemon"
 spawn-at-startup "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
 spawn-at-startup "noctalia"
 spawn-at-startup "wl-paste" "--type" "text" "--watch" "cliphist store"
+spawn-at-startup "wl-paste" "--type" "image" "--watch" "cliphist store"
 spawn-at-startup "swayidle" "-w" "timeout" "${CFG_LOCK_SECS}" "swaylock -f -c 000000" "timeout" "${CFG_OFF_SECS}" "niri msg action power-off-monitors" "resume" "niri msg action power-on-monitors" "before-sleep" "swaylock -f -c 000000"
 ${_wlsunset_line}
 

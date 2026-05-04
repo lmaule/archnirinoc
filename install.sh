@@ -467,7 +467,7 @@ layout {
         proportion 0.5
         proportion 0.666667
     }
-    default-column-width { proportion 0.5 }
+    default-column-width { proportion 0.5; }
     focus-ring {
         width 2
         active-color "#7fc8ff"

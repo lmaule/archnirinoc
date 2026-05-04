@@ -35,7 +35,7 @@ A bootstrap script that sets up a complete [Niri](https://github.com/YaLTeR/niri
 ```bash
 git clone https://github.com/lmaule/archnirinoc.git
 cd archnirinoc
-bash bootstrap.sh
+bash install.sh
 ```
 
 The script is interactive only for GPU driver selection — everything else runs unattended.

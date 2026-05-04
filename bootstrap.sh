@@ -58,6 +58,143 @@ else
     ok "paru installed"
 fi
 
+# ── GPU drivers ──────────────────────────────────────────────────────────────
+header "GPU drivers"
+
+_install_nvidia() {
+    info "Installing NVIDIA open kernel module drivers (requires Turing / RTX 2000+ or newer)..."
+
+    # Install headers for every detected kernel so DKMS can build against each
+    info "Installing kernel headers for DKMS..."
+    while IFS= read -r _kpkg; do
+        sudo pacman -S --noconfirm --needed "${_kpkg}-headers" \
+            && ok "Installed ${_kpkg}-headers" \
+            || warn "Could not install ${_kpkg}-headers — skipping"
+    done < <(pacman -Qq | grep -E "^linux(-lts|-zen|-hardened)?$")
+
+    sudo pacman -S --noconfirm --needed \
+        nvidia-open-dkms \
+        nvidia-utils \
+        lib32-nvidia-utils \
+        nvidia-settings \
+        egl-wayland
+
+    # Early KMS: add nvidia modules to mkinitcpio so the driver is loaded
+    # during initramfs, preventing a race condition with the display manager
+    local _conf=/etc/mkinitcpio.conf
+    local _mods="nvidia nvidia_modeset nvidia_uvm nvidia_drm"
+    if ! grep -q "nvidia" "$_conf"; then
+        local _cur
+        _cur=$(grep "^MODULES=" "$_conf" | sed 's/MODULES=(\(.*\))/\1/' | xargs)
+        if [[ -z "$_cur" ]]; then
+            sudo sed -i "s|^MODULES=(.*|MODULES=($_mods)|" "$_conf"
+        else
+            sudo sed -i "s|^MODULES=(.*|MODULES=($_cur $_mods)|" "$_conf"
+        fi
+        info "Rebuilding initramfs with nvidia modules..."
+        sudo mkinitcpio -P
+    else
+        ok "nvidia already present in mkinitcpio MODULES — skipping"
+    fi
+
+    # Kernel parameter: enable DRM modesetting (required for Wayland)
+    local _param="nvidia-drm.modeset=1"
+    if [[ -d /boot/loader/entries ]]; then
+        local _updated=0
+        for _entry in /boot/loader/entries/*.conf; do
+            if grep -q "^options" "$_entry" && ! grep -q "$_param" "$_entry"; then
+                sudo sed -i "s|^options .*|& $_param|" "$_entry"
+                ok "Added $_param → $(basename "$_entry")"
+                _updated=1
+            fi
+        done
+        [[ $_updated -eq 0 ]] && warn "systemd-boot entry already has $_param or none found"
+    elif [[ -f /etc/default/grub ]]; then
+        if ! grep -q "$_param" /etc/default/grub; then
+            sudo sed -i \
+                "s|GRUB_CMDLINE_LINUX_DEFAULT=\"\([^\"]*\)\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\1 $_param\"|" \
+                /etc/default/grub
+            sudo grub-mkconfig -o /boot/grub/grub.cfg
+            ok "Added $_param to GRUB and regenerated grub.cfg"
+        else
+            ok "GRUB already has $_param — skipping"
+        fi
+    else
+        warn "Bootloader not detected — add '$_param' to your kernel parameters manually."
+    fi
+
+    # Environment variables required for NVIDIA + Wayland
+    mkdir -p "$HOME/.config/environment.d"
+    cat > "$HOME/.config/environment.d/nvidia-wayland.conf" <<'EOF'
+LIBVA_DRIVER_NAME=nvidia
+__GLX_VENDOR_LIBRARY_NAME=nvidia
+EOF
+    ok "Wayland environment written to ~/.config/environment.d/nvidia-wayland.conf"
+    ok "NVIDIA drivers installed — a full reboot is required before starting Niri."
+}
+
+_install_amd() {
+    info "Installing AMD drivers (mesa + vulkan-radeon)..."
+    sudo pacman -S --noconfirm --needed \
+        mesa \
+        lib32-mesa \
+        vulkan-radeon \
+        lib32-vulkan-radeon \
+        libva-mesa-driver \
+        mesa-vdpau
+    ok "AMD drivers installed"
+}
+
+_install_intel() {
+    info "Installing Intel drivers (mesa + vulkan-intel + intel-media-driver)..."
+    sudo pacman -S --noconfirm --needed \
+        mesa \
+        lib32-mesa \
+        vulkan-intel \
+        lib32-vulkan-intel \
+        intel-media-driver
+    ok "Intel drivers installed"
+}
+
+# Auto-detect GPU vendor via lspci
+_detected_gpu="none"
+if lspci 2>/dev/null | grep -Eiq "VGA|3D|Display"; then
+    if lspci 2>/dev/null | grep -Eiq "NVIDIA"; then
+        _detected_gpu="nvidia"
+    elif lspci 2>/dev/null | grep -Eiq "AMD|ATI|Radeon"; then
+        _detected_gpu="amd"
+    elif lspci 2>/dev/null | grep -Eiq "Intel.*Graphics|Intel.*VGA"; then
+        _detected_gpu="intel"
+    fi
+fi
+
+case "$_detected_gpu" in
+    nvidia) _gpu_default=1 ;;
+    amd)    _gpu_default=2 ;;
+    intel)  _gpu_default=3 ;;
+    *)      _gpu_default=4 ;;
+esac
+
+[[ "$_detected_gpu" != "none" ]] \
+    && info "Detected GPU vendor: ${_detected_gpu}" \
+    || warn "GPU vendor not auto-detected"
+
+printf "\n  Select GPU driver to install:\n"
+printf "  1) NVIDIA  open-dkms  (Turing / RTX 2000+ required)\n"
+printf "  2) AMD     mesa + vulkan-radeon\n"
+printf "  3) Intel   mesa + vulkan-intel + intel-media-driver\n"
+printf "  4) Skip    (drivers already installed or VM / unsupported GPU)\n"
+read -rp "  Choice [${_gpu_default}]: " _gpu_choice
+_gpu_choice="${_gpu_choice:-$_gpu_default}"
+
+case "$_gpu_choice" in
+    1) _install_nvidia ;;
+    2) _install_amd    ;;
+    3) _install_intel  ;;
+    4) warn "Skipping GPU driver installation" ;;
+    *) warn "Invalid choice — skipping GPU driver installation" ;;
+esac
+
 # ── Audio: PipeWire stack ────────────────────────────────────────────────────
 header "Audio stack (PipeWire)"
 sudo pacman -S --noconfirm --needed \

@@ -264,6 +264,7 @@ window-rule {
 binds {
     // ── Applications ──────────────────────────────────────────────────
     Mod+Return { spawn "kitty"; }
+    Mod+D      { spawn-sh "noctalia-shell ipc call launcher toggle"; }
 
     // ── Window management ─────────────────────────────────────────────
     Mod+Q           { close-window; }

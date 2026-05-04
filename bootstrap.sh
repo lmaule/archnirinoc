@@ -256,14 +256,43 @@ sudo pacman -S --noconfirm --needed \
     ttf-font-awesome
 ok "Fonts installed"
 
-# ── GTK theme & icons ────────────────────────────────────────────────────────
-header "GTK theme & icons"
+# ── GTK & Qt theming ────────────────────────────────────────────────────────
+header "GTK & Qt theming"
+
+# GTK: runtime libs, schema data, icons, and nwg-look (Wayland-native GTK
+# settings editor — replaces lxappearance which doesn't work on Wayland)
 sudo pacman -S --noconfirm --needed \
+    gtk3 \
+    gtk4 \
     adwaita-icon-theme \
     gsettings-desktop-schemas \
-    gtk3 \
-    gtk4
-ok "GTK theme assets installed"
+    nwg-look
+
+# Qt: qt5ct and qt6ct let Noctalia apply its color scheme to Qt apps;
+# Kvantum is the style engine that renders those themes
+sudo pacman -S --noconfirm --needed \
+    qt5ct \
+    qt6ct \
+    kvantum
+
+# Tell Qt to use the Wayland backend and qt6ct as the platform theme.
+# Written to environment.d so systemd --user exports it to every process
+# launched after login, including Niri and all apps it spawns.
+mkdir -p "$HOME/.config/environment.d"
+cat > "$HOME/.config/environment.d/theming.conf" <<'EOF'
+# Qt: render on Wayland, use qt6ct for theming (Noctalia sets its color scheme here)
+QT_QPA_PLATFORM=wayland
+QT_QPA_PLATFORMTHEME=qt6ct
+
+# Cursor: Adwaita is already present via adwaita-icon-theme
+XCURSOR_THEME=Adwaita
+XCURSOR_SIZE=24
+EOF
+
+ok "GTK & Qt theming packages installed"
+ok "Theming environment written to ~/.config/environment.d/theming.conf"
+info "Run 'nwg-look' inside a Niri session to configure GTK theme, icons, and cursor interactively."
+info "Run 'qt6ct' to configure Qt6 style (set to Kvantum, then configure Kvantum via 'kvantummanager')."
 
 # ── Network & Bluetooth applets ──────────────────────────────────────────────
 header "Network & Bluetooth"
@@ -346,6 +375,11 @@ input {
     mouse {
         natural-scroll false
     }
+}
+
+cursor {
+    xcursor-theme "Adwaita"
+    xcursor-size 24
 }
 
 output "eDP-1" {
